@@ -1,27 +1,32 @@
 %{
 (* --- PARTIE 1, préambule : ici du code Caml --- *)
 
-open Expressions   (* rappel: dans expressions.ml: 
-             type expr = Cst of int | Add of expr*expr | Mul of expr*expr | Min of expr*expr *)
-
-
+open Types
+open Parser_helper
 %}
 
 /* PARTIE 2, on liste les lexèmes (lien avec le fichier lexer.mll) ******* */                                   
-%token LPAREN RPAREN PTVIRGULE EOF
-%token IF THEN ELSE TRUE FALSE
-%token LET IN FUN REC ARROW
+%token LPAREN RPAREN PTVIRGULE EOF LBRACKET RBRACKET PIPE
+%token IF THEN ELSE TRUE FALSE MATCH WITH FOR WHILE DO DONE TO DOWNTO BEGIN END FUNCTION
+%token TRY RAISE
+%token LET IN FUN REC ARROW QUAD_VIRGULE
 %token <int> INT       /* le lexème INT a un attribut entier */
-%token <string> IDENT
+%token <string> IDENT CAPIDENT
 %token ASSIGN
-%token MINUS QUAD_DOT AND OR EQUAL
+%token MINUS QUAD_DOT AND OR EQUAL COMMA
 %token <string> OP_BANG OP_HASH OP_STARSTAR OP_STAR OP_PLUS OP_AT OP_EQ
 
 /* PARTIE 3, on donne les associativités et on classe les priorités (- -> +)prio ******** */
+
+%nonassoc GREEDYPIPE
+%left PIPE
+
+%right SEQUENCE
 %right PTVIRGULE
 %right THEN ELSE
-%nonassoc IN ARROW
 %right ASSIGN
+%nonassoc GREEDYCOMMA
+%left COMMA
 %right OR
 %right AND
 %left OP_EQ EQUAL
@@ -32,56 +37,81 @@ open Expressions   (* rappel: dans expressions.ml:
 %right OP_STARSTAR
 %nonassoc UNARY_MINUS
 %left OP_HASH
-%nonassoc OP_BANG
+%nonassoc OP_BANG 
 
-%left TRUE LPAREN FALSE IDENT INT
+%left TRUE LPAREN FALSE IDENT INT LBRACKET CAPIDENT BEGIN
 
 /* PARTIE 4, le point d'entrée ******************************************* */
 		    
 %start main             /* "start" signale le point d'entrée du parser: */
                         /* c'est ici le non-terminal "main", qui est défini plus bas */
-%type <Expressions.expr> main     /* on _doit_ donner le type associé au point d'entrée "main" */
+%type <Types.expr> main     /* on _doit_ donner le type associé au point d'entrée "main" */
 
-
+ 
 /* PARTIE 5 : la grammaire, enfin ! ************************************** */                                                         
 %%
 
 main:                       /* <- le point d'entrée (cf. + haut, "start") */
 | e=expression EOF { e }  /* on reconnaît une expression suivie de "EndOfFile", on la renvoie telle quelle */
-  
+| LET rc=boption(REC) p=pattern lst=pattern_list EQUAL e1=expression QUAD_VIRGULE e2=main
+      {
+         Let(p,curify lst e1,e2,rc)
+      }
 
 /* règles de grammaire pour les expressions ; le non-terminal s'appelle "expression" */                                                                                
 expression:
-  | e=param                               { e }   
-  | e1=expression o=operator e2=expression{ Call(Call(Var("( "^o^" )"),e1),e2) }
-  | MINUS e=expression %prec UNARY_MINUS  { Call(Call(Var("( - )"),Cst(VI(0))),e) } (* le moins unaire *)
-  | e1=expression PTVIRGULE e2=expression { Let("_",e1,e2,false) }
-  | e1=expression PTVIRGULE               { e1 }
-  | e1=expression e2=param                { Call(e1,e2) }
-  | IF e1=expression THEN e2=expression ELSE e3=expression {
-             Control_flow(e1,[
-				(Exact (VB true),e2);
-				(Exact (VB false),e3);
-			],false) }
-  | IF e1=expression THEN e2=expression   {
-		Control_flow(e1,[
-			(Exact (VB true),e2);
-			(Exact (VB false),Cst(Unit));
-		],false)}
+  | e=exp_no_s %prec SEQUENCE                                {e}
+  | e1=exp_no_s PTVIRGULE e2=expression                      { Let(Binding "_",e1,e2,false) }
+  | e1=exp_no_s PTVIRGULE                                    { e1 }
 
-  | LET rc=some_rec id=ident lst=identifier_list EQUAL e1=expression IN e2=expression
+exp_no_s:
+  | t = tupple                    { match t with
+                                    | [e] -> e
+                                    | l -> Constructor("",l) }
+  | e=exp_no_s ASSIGN e2=exp_no_s { Call(Call(Var("( := )"),e),e2) }
+
+exp_no_s2:
+  | e=param                                            { e }   
+  | e1=exp_no_s2 o=operator_noassign e2=exp_no_s2      { Call(Call(Var("( "^o^" )"),e1),e2) }
+  | MINUS e=exp_no_s2 %prec UNARY_MINUS                { Call(Call(Var("( - )"),Cst(VI(0))),e) } (* le moins unaire *)
+  | e1=exp_no_s2 e2=param                              { Call(e1,e2) }
+  | e1=exp_no_s2 QUAD_DOT e2=exp_no_s                  { Constructor("(::)",[e1;e2]) }
+  | IF e1=exp_no_s THEN e2=exp_no_s ELSE e3=exp_no_s {
+             Control_flow(e1,[
+				(Constr_p("true",[]),e2);
+				(Constr_p("false",[]),e3);
+			],false) }
+  | IF e1=exp_no_s THEN e2=exp_no_s   {
+			Control_flow(e1,[
+				(Constr_p("true",[]),e2);
+				(Constr_p("false",[]),Cst(Unit));
+			],false)}
+
+  | LET rc=boption(REC) p=pattern lst=pattern_list EQUAL e1=expression IN e2=expression
       {
-         Let(id,Expressions.curify lst e1,e2,rc)
+         Let(p,curify lst e1,e2,rc)
       }
 
-  | FUN id=ident lst=identifier_list ARROW e1=expression         {
-      Cst(Fun(Some id,
-         Expressions.curify lst e1
+  | FUN p=pattern lst=pattern_list ARROW e1=expression         {
+      Cst(Fun(p,
+         curify lst e1
       ))}
 
-identifier_list:
+  | MATCH e=expression WITH lst=match_arms { Control_flow(e,lst,false) }
+  | FUNCTION lst=match_arms                { Cst(Fun(Binding(":function"),Control_flow(Var(":function"),lst,false))) }
+  | TRY e=expression WITH lst=match_arms   { Try(e,lst) }
+  | RAISE p=param                          { Raise(p) }
+  | WHILE cond=expression DO body=expression DONE { Control_flow(cond,[Constr_p("true",[]),body],true) }
+  | FOR id=ident EQUAL start=expression incr=to_downto stop=expression DO body = expression DONE { for_loop id start incr stop body } 
+
+tupple:
+  | e=exp_no_s2 %prec GREEDYCOMMA { [e] }
+  | e=exp_no_s2 COMMA lst=tupple { e::lst }
+
+
+pattern_list:
    | { [] }
-   | id=ident list=identifier_list { id::list }
+   | p=pattern list=pattern_list { p::list }
 
 ident:
   | id=IDENT { id }
@@ -90,17 +120,19 @@ ident:
 
 param:
   | LPAREN e=expression RPAREN            { e }
-  | LPAREN RPAREN                         { Cst(Unit) }
-  | TRUE                                  { Cst (VB(true)) }
-  | FALSE                                 { Cst (VB(false))}
   | id=ident                              { Var(id) }
-  | i=INT                                 { Cst (VI i) }
+  | id=constructor                        { Constructor(id,[]) }
   | op=prefix_operator e=param            { Call(Var("( "^op^" )"),e) }
+  | c=constant                            { Cst(c) }
+  | LBRACKET lst=separated_list(PTVIRGULE, exp_no_s) RBRACKET{ list_expr lst } 
+  | BEGIN e=expression END                { e }
 
 %inline operator:
 | ASSIGN         {":="}
+| op=operator_noassign {op}
+
+%inline operator_noassign:
 | MINUS          {"-"}
-| QUAD_DOT       {"::"}
 | id=OP_HASH     {id}
 | id=OP_STARSTAR {id}
 | id=OP_STAR     {id}
@@ -114,7 +146,49 @@ param:
 %inline prefix_operator:
 | id=OP_BANG {id}
 
+	
 
-some_rec:
-| REC {true}
-| (*empty*) {false}
+constant:
+  | LPAREN RPAREN                         { Unit }
+  | TRUE                                  { Construct("true",[]) }
+  | FALSE                                 { Construct("false",[]) }
+  | i=INT                                 { VI i }
+
+match_arms:
+  | PIPE? lst=delimited_match_arms { lst }
+  
+delimited_match_arms:
+  | a=match_arm %prec GREEDYPIPE { [a] }
+  | a=match_arm PIPE l=delimited_match_arms { a::l }
+  
+
+match_arm:
+  | pat=pattern ARROW e=expression { (pat,e) }
+
+pattern:
+  | lst = separated_nonempty_list(COMMA,pat_no_coma) {
+    match lst with
+    | [p] -> p
+    | l -> Constr_p("",l)
+  }
+
+(*  *)
+pat_no_coma:
+	| id = ident                                                  { Binding(id) }
+    | p1=pat_no_coma PIPE p2=pat_no_coma                          { Either(p1,p2) }
+	| c=constant                                                  { Exact(c) }
+	| p1=pat_no_coma QUAD_DOT p2=pat_no_coma                      { Constr_p("(::)",[p1;p2]) }
+    | LBRACKET lst=separated_list(PTVIRGULE, pattern) RBRACKET    { list_patt lst }
+    | LPAREN p=pattern RPAREN                                     { p }
+    | id=constructor                %prec OP_STAR                 { Constr_p(id,[]) }
+    | id=constructor p=pat_no_coma  %prec OP_PLUS                 { match p with
+                                                                    | Constr_p("",l) -> Constr_p(id,l)
+                                                                    | p -> Constr_p(id,[p]) }
+
+constructor:
+  | id=CAPIDENT            { id }
+  | LPAREN QUAD_DOT RPAREN { "(::)" }
+
+to_downto:
+  | TO { 1 }
+  | DOWNTO { -1 }

@@ -3,10 +3,13 @@ open Lib
 (* "incantations" qu'il n'est pas nécessaire de comprendre dans un premier
    temps : on récupère l'entrée, dans un fichier ou sur le clavier *)
 let nom_fichier = ref ""
+let showsrc = ref false;;
+let debug = ref false;;
 
 let recupere_entree () =
   Arg.parse (* ci-dessous les 3 arguments de Arg.parse : *)
-    [] (* la liste des options, vide *)
+    [("-showsrc", Arg.Set showsrc, "Output debug information");
+   ("-debug", Arg.Set debug, "Set output file name")] (* la liste des options, vide *)
     (fun s -> nom_fichier := s) (* la fonction a declencher lorsqu'on recupere un string qui n'est pas une option : ici c'est le nom du fichier, et on stocke cette information dans la reference nom_fichier *)
     ""; (* le message d'accueil, qui est vide *)
   try
@@ -22,13 +25,8 @@ let recupere_entree () =
 (* le traitement d'une expression en entrée *)   
 let execute e =
   begin
-    (*Affichage.affiche_expr e; (* on affiche e *)
-    print_string " <-- affichage juste pour montrer l'arbre";
-    print_newline();*)
-    let v =  Expressions.eval_ctx e Std.std in (* on évalue e *)
-    (*Affichage.affiche_val v;
-    print_newline();*)
-    (ignore v);
+    Expressions.debug := !debug;
+    Expressions.eval_ctx Std.std e ignore Std.uncaught
   end
 
 
@@ -36,7 +34,10 @@ let execute e =
 let run () =
   try
       let saisie = recupere_entree () in
-	execute saisie; flush stdout
+      match !showsrc,!debug with
+      | false,false ->	execute saisie; flush stdout
+      | true,false -> Printf.printf "%s\n" (Affichage.affiche_expr saisie)
+      | false,true | true,true -> Printf.printf "%s\n" (Affichage.affiche_expr saisie); execute saisie;flush stdout; 
   with e -> raise e  (* <-- en cas d'exception *)
 
 
