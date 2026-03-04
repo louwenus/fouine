@@ -75,6 +75,7 @@ let rec cps (e : expr) : expr =
   | Let(binding,e1,e2,false) ->
     let e1,e2 = cps e1,cps e2 in
     placeholder "fun k k_E -> __ (fun %s -> __ k k_E) k_E" (Affichage.affiche_pat binding) [e1;e2] (*Oui je transforme un pattern en string pour le reparser. Mais je suis une feignasse*)
+  | Let(_,_,_,true) -> placeholder "fun k k_E -> "
   | Call(e1,e2) ->
     let e1,e2 = cps e1,cps e2 in
     placeholder "fun k k_E -> __ (fun v2 -> __ (fun v1 -> v1 v2 k k_E) k_E) k_E" [e2;e1]
@@ -91,7 +92,7 @@ let rec cps (e : expr) : expr =
   | Raise(e) ->
     let e = cps e in
     placeholder "fun k k_E -> __ k_E k_E" [e]
-  | Let(_,_,_,true) | Control_flow(_,_,true) -> failwith "no loop/recursion yet"
+  | Control_flow(_,_,true) -> failwith "no loop yet"
   
     
 

@@ -1,5 +1,6 @@
 open Types
 
+(*string if*)
 let stif b s =
   if b then
     s
@@ -7,7 +8,7 @@ let stif b s =
     ""
 ;;
 
-(* fonction d'affichage *)
+(* transforme une expression au format string. Récursif. Les sous-expressions sont parenthésées *)
 let rec affiche_expr e =
   match e with
   | Cst k -> affiche_val k
