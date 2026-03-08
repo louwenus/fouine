@@ -1,6 +1,6 @@
 (* Les expression *)
 type expr =
-  | Cst of valeur
+  | Cst of valeur (*NB: Used to represent function in source too with a Cst(Fun(_))*)
   | Var of string
   | Call of expr * expr
   | Let of pattern * expr * expr * bool (*let string = expr in expr, recursive ?*)
@@ -17,25 +17,25 @@ type expr =
 (* les valeurs *)
 and valeur =
   | VI of int
-  | Construct of string * valeur list
-  (*the contructor name, then the arguments*)
-  (*Note that we use the illegal identifier "ctr:"^name to store some information about that contructor*)
-  | Fun of pattern * expr
-    (*Fun(Some(binding),expression) is fun binding -> expression. The None form is fun () -> *)
+  | Construct of string * valeur list  (*the contructor name, then the arguments.  Boolean are there as Construct("true"/"false",[])*)
+
+  | Fun of pattern * expr * ( (string*valeur) list option )
+    (*Fun(binding,expression,capture list) is fun binding -> expression. The capture list is empty in the source code and filled when evaluation occur (closure) *)
+
   | Intrinsic of (valeur -> context -> valeur) * string
     (*A function defined outside of fouine (in ocaml). Used to implement things like print_int or (+) *)
+
   | Unit
 
 (* Le contexte *)
-(* Utilisé pour faire des association variable -> valeur *)
-(* Utilisé également avec des identifiers illégaux tels que "type:nom" pour stocker de l'information a propos d'autres choses *)
+(* Utilisé pour faire des association variable -> valeur, constructeur -> nombre d'arguments, et ref -> contenu *)
 and context =
   { vars : (string, valeur) Hashtbl.t
   ; constructors : (string, int) Hashtbl.t
-  ; refs : sparse_vec
+  ; refs : vec
   }
 
-(*Represent every? control flow as a tuple (decide,branch,loop) using the following logic:
+(*Represent every control flow (if, match, loop) as a tuple (decide,branch,loop) using the following logic:
   - on evalue decide
   - on prend la première branche ayant un pattern accetptant (avec les eventuels binding correspondant)
   - si loop vaut vrai, on recommence tant qu'on peut prendre une branche, puis on renvoie unit
@@ -43,21 +43,19 @@ and context =
   *)
 and control_flow = expr * (pattern * expr) list * bool
 
-(*Used mostly for match arm, but in the end will also be used for let and function arg*)
+(*match arm, let assignement and function argument*)
 and pattern =
   | Binding of string
   | Exact of valeur (*Note: function are forbiden here*)
   | Constr_p of string * pattern list
   | Either of pattern * pattern
-(*a constructor name then the sub pattern for each argument*)
 
-and sparse_vec =
+and vec =
   { (*Ocupied slot are the value directly*)
-    (*Unocupied slot hold a VI(x) where x is the index of the next free slot*)
-    (*-1 represent no more empty slot*)
+    (*Unocupied slot hold a VI(0)*)
     mutable store : valeur array
-  ; (*index of a free slot or -1 if no such slot exist*)
-    mutable free_slot : int
+  ; (*index of a next free slot (or lenght of store if full)*)
+    mutable next_slot : int
   }
 
 module StringSet = Set.Make (String)

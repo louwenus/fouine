@@ -37,55 +37,22 @@ let partial
     , name )
 ;;
 
-(*This is a demonstration of the kind of arboresent Intrinsic we get to define for for something like (+) *)
-let _ =
-  let f = ( + ) in
-  Intrinsic
-    ( (fun x _ ->
-        let f = f (to_int x) in
-        Intrinsic
-          ( (fun x _ ->
-              let i = to_int x in
-              from_int (f i))
-          , "( + )" ))
-    , "( + )" )
-;;
-
-(*This is what the mk_intrinsic macro will actually write*)
-let _ =
-  let f = ( + ) in
-  partial "( + )" to_int (partial "( + )" to_int from_int) f
-;;
-
-(*Some other intrinsic*)
+(*Some directly defined intrinsic*)
+(*ref operator*)
 let intr_ref =
   Intrinsic
     ( (fun v ctx ->
-        let idx =
-          match ctx.refs.free_slot with
-          | -1 ->
-            let n = Array.length ctx.refs.store in
-            let arr =
-              Array.init n (fun x ->
-                if x = n - 1 then
-                  VI (-1)
-                else
-                  VI (x + n + 1))
-            in
-            ctx.refs.store <- Array.append ctx.refs.store arr;
-            n
-          | x ->
-            (match ctx.refs.store.(x) with
-             | VI y ->
-               ctx.refs.free_slot <- y;
-               x
-             | _ -> raise (InternalError "A ref free slot was not a free slot"))
-        in
+        let idx = ctx.refs.next_slot in
+        let n = Array.length ctx.refs.store in
+        if idx >= n then
+          ctx.refs.store <- Array.append ctx.refs.store (Array.make n (VI 0));
+        ctx.refs.next_slot <- idx + 1;
         ctx.refs.store.(idx) <- v;
         Construct ("ref", [ VI idx ]))
     , "ref" )
 ;;
 
+(*:= operator*)
 let intr_assign =
   Intrinsic
     ( (fun v _ ->
@@ -100,6 +67,7 @@ let intr_assign =
     , "( := )" )
 ;;
 
+(*! operator*)
 let intr_deref =
   Intrinsic
     ( (fun v ctx ->
@@ -110,6 +78,7 @@ let intr_deref =
 ;;
 
 (*Now we call the macro (defined in ../mk_intrinsic/mk_intrinsic.ml) to automatically generate a bunch of intrinsic from the coressponding ocaml function*)
+(*the list also contains the previous 3 intrinsics*)
 let std_intrinsics =
   [%mk_intrinsic
     [ (( + ) : int -> int -> int)
@@ -124,6 +93,7 @@ let std_intrinsics =
     ; (( = ) : int -> int -> bool)
     ; (( && ) : bool -> bool -> bool)
     ; (( || ) : bool -> bool -> bool)
+    ; (not : bool -> bool)
     ; (( mod ) : int -> int -> int)
     ; (( land ) : int -> int -> int)
     ; (( lor ) : int -> int -> int)
@@ -160,6 +130,7 @@ let std_constructor =
 Note that order matter: subsequent function can use previous ones along with intrinsics*)
 let std_in_lang =
   [ "prInt", "fun x -> (\n  print_int x;\n  print_newline ();\n  x)"
+    (*for loops are hard to define later in case ! has been overwritten*)
   ; ( ":for_loop"
     , "fun start incr stop body ->\n\
       \                  let cnt = ref start in\n\
@@ -172,11 +143,12 @@ let std_in_lang =
 
 let uncaught _ = raise (RuntimeError "An exception was thrown and not caught!")
 
+(*Construct the std by adding each things in order: the intrinsics, the constructors, and then the function defined in lang*)
 let std =
   let std =
     { vars = Hashtbl.create 100
     ; constructors = Hashtbl.create 20
-    ; refs = { store = Array.make 1 (VI (-1)); free_slot = 0 }
+    ; refs = { store = Array.make 1 (VI (-1)); next_slot = 0 }
     }
   in
   List.iter

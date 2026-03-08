@@ -7,13 +7,13 @@ open Parser_helper
 
 /* PARTIE 2, on liste les lexèmes (lien avec le fichier lexer.mll) ******* */                                   
 %token LPAREN RPAREN PTVIRGULE EOF LBRACKET RBRACKET PIPE
-%token IF THEN ELSE TRUE FALSE MATCH WITH FOR WHILE DO DONE TO DOWNTO BEGIN END FUNCTION
+%token IF THEN ELSE TRUE FALSE MATCH WITH AND FOR WHILE DO DONE TO DOWNTO BEGIN END FUNCTION
 %token TRY RAISE
 %token LET IN FUN REC ARROW QUAD_VIRGULE
 %token <int> INT       /* le lexème INT a un attribut entier */
 %token <string> IDENT CAPIDENT
 %token ASSIGN
-%token MINUS QUAD_DOT AND OR EQUAL COMMA
+%token MINUS QUAD_DOT OR EQUAL COMMA LAND
 %token <string> OP_BANG OP_HASH OP_STARSTAR OP_STAR OP_PLUS OP_AT OP_EQ
 
 /* PARTIE 3, on donne les associativités et on classe les priorités (- -> +)prio ******** */
@@ -28,7 +28,7 @@ open Parser_helper
 %nonassoc GREEDYCOMMA
 %left COMMA
 %right OR
-%right AND
+%right LAND
 %left OP_EQ EQUAL
 %right OP_AT
 %right QUAD_DOT
@@ -52,11 +52,14 @@ open Parser_helper
 %%
 
 main:                       /* <- le point d'entrée (cf. + haut, "start") */
-| e=expression EOF { e }  /* on reconnaît une expression suivie de "EndOfFile", on la renvoie telle quelle */
-| LET rc=boption(REC) p=pattern lst=pattern_list EQUAL e1=expression QUAD_VIRGULE e2=main
+/* on reconnaît une expression suivie de "EndOfFile", séparées par des ;;, et le cas spécial de let ... ;; */
+| e=expression QUAD_VIRGULE? EOF { e }  
+| e1=expression QUAD_VIRGULE e2=main       { Let(Binding "_",e1,e2,false) }
+| LET rc=boption(REC) lst=let_and_list QUAD_VIRGULE e2=main
       {
-         Let(p,curify lst e1,e2,rc)
+          mk_let_and rc lst e2
       }
+
 
 /* règles de grammaire pour les expressions ; le non-terminal s'appelle "expression" */                                                                                
 expression:
@@ -64,12 +67,19 @@ expression:
   | e1=exp_no_s PTVIRGULE e2=expression                      { Let(Binding "_",e1,e2,false) }
   | e1=exp_no_s PTVIRGULE                                    { e1 }
 
+/* expressions sans séquance (sans ;)*/
 exp_no_s:
   | t = tupple                    { match t with
                                     | [e] -> e
                                     | l -> Constructor("",l) }
   | e=exp_no_s ASSIGN e2=exp_no_s { Call(Call(Var("( := )"),e),e2) }
 
+tupple:
+  | e=exp_no_s2 %prec GREEDYCOMMA { [e] }
+  | e=exp_no_s2 COMMA lst=tupple { e::lst }
+
+
+/* expressions sans séquance ni tupple (ni ; ni ,) */
 exp_no_s2:
   | e=param                                            { e }   
   | e1=exp_no_s2 o=operator_noassign e2=exp_no_s2      { Call(Call(Var("( "^o^" )"),e1),e2) }
@@ -87,26 +97,27 @@ exp_no_s2:
 				(Constr_p("false",[]),Cst(Unit));
 			],false)}
 
-  | LET rc=boption(REC) p=pattern lst=pattern_list EQUAL e1=expression IN e2=expression
-      {
-         Let(p,curify lst e1,e2,rc)
-      }
+  | LET rc=boption(REC) lst=let_and_list IN e2=expression  { mk_let_and rc lst e2 }
 
   | FUN p=pattern lst=pattern_list ARROW e1=expression         {
       Cst(Fun(p,
-         curify lst e1
+         curify lst e1,
+         None
       ))}
 
   | MATCH e=expression WITH lst=match_arms { Control_flow(e,lst,false) }
-  | FUNCTION lst=match_arms                { Cst(Fun(Binding(":function"),Control_flow(Var(":function"),lst,false))) }
+  | FUNCTION lst=match_arms                { Cst(Fun(Binding(":function"),Control_flow(Var(":function"),lst,false),None)) }
   | TRY e=expression WITH lst=match_arms   { Try(e,lst) }
   | RAISE p=param                          { Raise(p) }
   | WHILE cond=expression DO body=expression DONE { Control_flow(cond,[Constr_p("true",[]),body],true) }
   | FOR id=ident EQUAL start=expression incr=to_downto stop=expression DO body = expression DONE { for_loop id start incr stop body } 
 
-tupple:
-  | e=exp_no_s2 %prec GREEDYCOMMA { [e] }
-  | e=exp_no_s2 COMMA lst=tupple { e::lst }
+
+/*list d'assignation séparés par and (utilisé dans les let)*/
+let_and_list:
+  | p=pattern lst=pattern_list EQUAL e1=expression { [(p,lst,e1)] }
+  | p=pattern lst=pattern_list EQUAL e1=expression AND next=let_and_list { (p,lst,e1)::next }
+
 
 
 pattern_list:
@@ -118,18 +129,22 @@ ident:
   | LPAREN op=operator RPAREN { "( "^op^" )" }
   | LPAREN op=prefix_operator RPAREN { "( "^op^" )" }
 
+/* expression qui peut figurer en tant qu'argument de fonction (opérations plus prioritaires uniquement) */
 param:
   | LPAREN e=expression RPAREN            { e }
+  | BEGIN e=expression END                { e }
   | id=ident                              { Var(id) }
   | id=constructor                        { Constructor(id,[]) }
   | op=prefix_operator e=param            { Call(Var("( "^op^" )"),e) }
   | c=constant                            { Cst(c) }
   | LBRACKET lst=separated_list(PTVIRGULE, exp_no_s) RBRACKET{ list_expr lst } 
-  | BEGIN e=expression END                { e }
 
+/*Operators. the %inline keyword permit to carry the priority rules to the parent rule by inlining this one*/
+/*the assignement operator is separated from the rest because of its wierd priority wich put him in a separate grammar strate (less priority than ,)*/
 %inline operator:
 | ASSIGN         {":="}
 | op=operator_noassign {op}
+
 
 %inline operator_noassign:
 | MINUS          {"-"}
@@ -141,7 +156,7 @@ param:
 | id=OP_EQ       {id}
 | EQUAL          {"="}
 | OR             { "||" }
-| AND            { "&&" }
+| LAND           { "&&" }
 
 %inline prefix_operator:
 | id=OP_BANG {id}
@@ -172,7 +187,7 @@ pattern:
     | l -> Constr_p("",l)
   }
 
-(*  *)
+(*  a pattern without ","*)
 pat_no_coma:
 	| id = ident                                                  { Binding(id) }
     | p1=pat_no_coma PIPE p2=pat_no_coma                          { Either(p1,p2) }

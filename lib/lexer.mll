@@ -15,7 +15,7 @@ let op_char = ['~' '!' '?' '%' '<' ':' '.'] | core_operator_char
 
                
 rule token = parse    (* la "fonction" aussi s'appelle token .. *)
-  | [' ' '\t' '\n']  { token lexbuf }    (* on saute les blancs et les tabulations *)
+  | [' ' '\t' '\n']  { token lexbuf }    (* on saute les blancs, les tabulations et les saut de ligne *)
   | eof              { EOF }
   | "->"             { ARROW }
   | '|'              { PIPE }
@@ -49,12 +49,14 @@ rule token = parse    (* la "fonction" aussi s'appelle token .. *)
   | "try"            { TRY }
   | "raise"          { RAISE }
   | "function"       { FUNCTION }
+  | "and"            { AND }
   | nombre as s      { INT (int_of_string s) }
+  (*Operator are all grouped by priority level, meaning special ones are with an OP_... with same precedence but different name. thats normal*)
   | "!="             { OP_EQ "!=" }
   | '-'              { MINUS }
   | ":="             { ASSIGN }
   | "::"             { QUAD_DOT }
-  | "&&"             { AND }
+  | "&&"             { LAND }
   | '&'              { AND }
   | "or"             { OR }
   | "||"             { OR }
@@ -82,24 +84,3 @@ and skip_comment = parse
   | "*)" { () }
   | eof  { (* unterminated comment error *) raise End_of_file; }
   | _    { skip_comment lexbuf; }
-
-(*
-and string = parse
-  | [^'\\' '"']* as s {s}
-
-and escape_sequence = parse
-  | "\\\\" { '\\' }
-  | "\\\"" { '"' }
-  | "\\'"  { '\'' }
-  | "\\n"  { '\n' }
-  | "\\r"  { '\r' }
-  | "\\t"  { '\t' }
-  | "\\b"  { '\b' }
-  | "\\ "  { '\ ' }
-  | "\\i" ['0'-'9']['0'-'9']['0'-'9'] as s { (Scanf.unescaped s).[0] }
-  | "\\x" ['0'-'9' 'a'-'f' 'A'-'F']['0'-'9' 'a'-'f' 'A'-'F'] as s { (Scanf.unescaped s).[0] }
-  | "\\" ['0'-'7']['0'-'7']['0'-'7']['0'-'7'] as s { (Scanf.unescaped s).[0] }
-
-and raw_string terminator =
-  | 
-*)

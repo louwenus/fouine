@@ -2,16 +2,16 @@ open Types
 open Affichage
 
 let debug = ref false
+let pp = Printf.sprintf
 
-let dbg fmt =
-  Printf.ksprintf
-    (fun s ->
-       if !debug then (print_string s;
-       print_newline ()))
-    fmt
+let dbg str =
+  if !debug then (
+    print_string (Lazy.force str);
+    print_newline ()
+  )
 ;;
 
-(* évaluation d'une expression en une valeur *)
+(* permet de trouver l'ensemble des variable libre dans une expression (utilisé pour les captures de closure) *)
 let rec open_vars_expr = function
   | Cst k -> open_vars_val k
   | Var name -> StringSet.singleton name
@@ -51,7 +51,10 @@ let rec open_vars_expr = function
 
 and open_vars_val = function
   | VI _ | Unit -> StringSet.empty
-  | Fun (binding, e) -> StringSet.diff (open_vars_expr e) (open_vars_pattern binding)
+  | Fun (binding, e, capture_list) ->
+    StringSet.diff
+      (StringSet.diff (open_vars_expr e) (open_vars_pattern binding))
+      (StringSet.of_list (List.map fst (Option.value ~default:[] capture_list)))
   | Intrinsic _ -> StringSet.empty
   | Construct (_, val_list) ->
     List.fold_left
@@ -81,7 +84,7 @@ let add_var ctx name v =
   match name with
   | "_" -> ()
   | _ ->
-    dbg "adding binding %s with value %s" name (affiche_val v);
+    dbg (lazy (pp "adding binding %s with value %s" name (affiche_val v)));
     Hashtbl.add ctx.vars name v
 ;;
 
@@ -91,14 +94,14 @@ let rem_var ctx name =
   match name with
   | "_" -> ()
   | _ ->
-    dbg "removing binding %s" name;
+    dbg (lazy (pp "removing binding %s" name));
     Hashtbl.remove ctx.vars name
 ;;
 
 let rem_vars ctx seq = Seq.iter (rem_var ctx) seq
 
 let add_ctr ctx name arity =
-  dbg "adding constructor %s with arity %i" name arity;
+  dbg (lazy (pp "adding constructor %s with arity %i" name arity));
   Hashtbl.add ctx.constructors name arity
 ;;
 
@@ -109,37 +112,52 @@ let find_ctr ctx name =
 ;;
 
 (*Define an expression that will restore every item in capture list as it is now before yielding e*)
-(*Done by wrapping e in a bunch of Let in*)
+(*Use the closure ability to restore context*)
 let rec restore capture_list ctx e : expr =
   match e with
-  | Cst (Fun (binding, sub)) ->
-    Cst (Fun (binding, restore capture_list ctx sub))
-    (*Optimisation: faire descendre directement les captures si on detecte directement un appel de fonction*)
-  | e ->
-    (match capture_list with
-     | [] -> e (*Nothing to do because no var were captured*)
-     | [ name ] ->
-       let value = find_var ctx name in
-       Let (Binding name, Cst value, e, false)
-     | l ->
-       let values = List.map (find_var ctx) l in
-       let names = List.map (fun x -> Binding x) l in
-       Let (Constr_p ("", names), Cst (Construct ("", values)), e, false))
+  (*Optimisation: faire descendre directement les captures si on detecte directement un appel de fonction*)
+  (*Si ce n'est pas une fonction mais une autre constante, pas besoin de l'environement restoré, c'est ok*)
+  | Cst (Fun (binding, Cst interior, None)) | Cst (Fun (binding, Cst interior, Some []))
+    -> Cst (Fun (binding, restore capture_list ctx (Cst interior), Some []))
+  | Cst (Fun (binding, interior, capture)) ->
+    let capture = Option.value ~default:[] capture in
+    let capture =
+      List.fold_left
+        (fun capture name -> (name, find_var ctx name) :: capture)
+        capture
+        capture_list
+    in
+    Cst (Fun (binding, interior, Some capture))
+  | Cst v -> Cst v
+  | Constructor (name, exprs) ->
+    Constructor (name, List.map (restore capture_list ctx) exprs)
+  | Var _ | Call _ | Control_flow _ | Let _ | Try _ | Raise _ ->
+    raise
+      (SyntaxError
+         ("Cannot do context restore in this expression. rec keywoard can only be used \
+           on function definition.\n\
+          \ Faulty expr:\n"
+          ^ Affichage.affiche_expr e))
 ;;
 
-(*Transform a function into a "closure" by saving all open variable (into let statements directly injected in the function code)*)
+(*Transform a function into a closure by saving all open variable)*)
 let mk_closure value ctx =
-  dbg "Capturing closure for %s" (affiche_val value);
+  dbg (lazy (pp "Capturing closure for %s" (affiche_val value)));
   match value with
-  | Fun (binding, e) ->
+  | Fun (_, _, _) ->
     let capture_list = open_vars_val value in
-    dbg "Capture list is:%s" (StringSet.fold (fun acc s -> acc ^ " " ^ s) capture_list "");
-    Fun (binding, restore (StringSet.to_list capture_list) ctx e)
+    dbg
+      (lazy
+        (pp
+           "Capture list is:%s"
+           (StringSet.fold (fun acc s -> acc ^ " " ^ s) capture_list "")));
+    (match restore (StringSet.to_list capture_list) ctx (Cst value) with
+     | Cst f -> f
+     | _ -> raise (InternalError "mk_closure programation error"))
   | v -> v
 ;;
 
-(*if pred match pat then return a list of binding defined in pat and their values, wrapped in Some.
-  if there is no match then return None*)
+(*try to match a pattern and a value. If it match, return a list of (binding,value), else, return None*)
 let rec matcher (pred : valeur) (pat : pattern) =
   match pat, pred with
   | Exact v, p ->
@@ -169,9 +187,18 @@ let rec matcher (pred : valeur) (pat : pattern) =
      | Some l -> Some l
      | None -> matcher v p2)
 ;;
+let rec expr_matcher e pat =
+  match pat,e with
+  | Constr_p(pat_name, pat_list), Constructor(cont_name,e_list) when pat_name = cont_name -> (
+      try List.fold_left2 (fun acc pat e -> Option.bind acc (fun l -> Option.map (fun l2 -> l2 @ l) (expr_matcher e pat))) (Some []) pat_list e_list
+      with Invalid_argument _ -> None
+    )
+  | _, Cst(v) -> matcher v pat
+  | _ -> None
+;;
 
-(*A constructor pattern with either not the same constructor or not a construct value -> we do not match*)
 
+(*Eval an expression in context. CPS style for exeption handling*)
 let rec eval_ctx
           (ctx : context)
           (e : expr)
@@ -180,20 +207,20 @@ let rec eval_ctx
   : 'a
   =
   match e with
-  | Cst (Fun (b, e)) -> cont (mk_closure (Fun (b, e)) ctx)
+  | Cst (Fun (b, e, caplist)) -> cont (mk_closure (Fun (b, e, caplist)) ctx)
   | Cst k ->
-    dbg "%s" (affiche_val k);
+    dbg (lazy (pp "%s" (affiche_val k)));
     cont k
   | Var name ->
     let v = find_var ctx name in
-    dbg "Resolved var %s to %s" name (affiche_val v);
+    dbg (lazy (pp "Resolved var %s to %s" name (affiche_val v)));
     cont v
   | Call (Constructor (name, []), arg) ->
     (match find_ctr ctx name with
      | 0 -> raise (SyntaxError "A constructor with no argument cannot be called")
      | n ->
        eval_ctx ctx arg (fun v ->
-         dbg "Constructing a %s with arguments %s" name (affiche_val v);
+         dbg (lazy (pp "Constructing a %s with arguments %s" name (affiche_val v)));
          match n, v with
          | k, Construct ("", l) when k = -1 || List.length l = k ->
            cont (Construct (name, l))
@@ -213,7 +240,7 @@ let rec eval_ctx
            e1
            (fun v1 ->
               match v1 with
-              | Fun (binding, expr) ->
+              | Fun (binding, expr, restore_list) ->
                 (match matcher v2 binding with
                  | None ->
                    raise
@@ -224,17 +251,42 @@ let rec eval_ctx
                            (affiche_val v1)
                            (affiche_val v2)))
                  | Some l ->
-                   dbg "Calling %s with %s" (affiche_val v1) (affiche_val v2);
-                   add_vars ctx (List.to_seq l);
-                   eval_ctx
-                     ctx
-                     expr
-                     (fun v ->
-                        rem_vars ctx (Seq.map fst (List.to_seq l));
-                        cont v)
-                     cont_exception)
+                   (match expr with
+                    | Cst (Fun (bind, expr, inner_list)) ->
+                      cont
+                        (Fun
+                           ( bind
+                           , expr
+                           , Some
+                               (Option.value ~default:[] restore_list
+                                @ l
+                                @ Option.value ~default:[] inner_list) ))
+                    | expr ->
+                      dbg
+                        (lazy (pp "Calling %s with %s" (affiche_val v1) (affiche_val v2)));
+                      add_vars ctx (List.to_seq l);
+                      Option.iter (fun l -> add_vars ctx (List.to_seq l)) restore_list;
+                      eval_ctx
+                        ctx
+                        expr
+                        (fun v ->
+                           rem_vars ctx (Seq.map fst (List.to_seq l));
+                           rem_vars
+                             ctx
+                             (Seq.flat_map
+                                (fun l -> List.map fst l |> List.to_seq)
+                                (Option.to_seq restore_list));
+                           cont v)
+                        (fun v ->
+                           rem_vars ctx (Seq.map fst (List.to_seq l));
+                           rem_vars
+                             ctx
+                             (Seq.flat_map
+                                (fun l -> List.map fst l |> List.to_seq)
+                                (Option.to_seq restore_list));
+                           cont_exception v)))
               | Intrinsic (f, name) ->
-                dbg "Calling intrinsic %s with arg %s" name (affiche_val v2);
+                dbg (lazy (pp "Calling intrinsic %s with arg %s" name (affiche_val v2)));
                 cont (f v2 ctx)
               | _ ->
                 raise
@@ -247,46 +299,52 @@ let rec eval_ctx
            cont_exception)
       cont_exception
   | Let (let_binding, e1, e2, recursive) ->
-    let next v1 =
-      match matcher v1 let_binding with
-      | None ->
-        raise
-          (SyntaxError
-             (Printf.sprintf
-                "Error: no match while attempting to bind value in let: pattern is %s\n\
-                \ and value is %s"
-                (affiche_pat let_binding)
-                (affiche_val v1)))
-      | Some l ->
-        add_vars ctx (List.to_seq l);
-        eval_ctx
-          ctx
-          e2
-          (fun v2 ->
-             rem_vars ctx (Seq.map fst (List.to_seq l));
-             cont v2)
-          cont_exception
+    let er v1 =
+      SyntaxError
+        (Printf.sprintf
+           "Error: no match while attempting to bind value in let: pattern is %s\n\
+           \ and value is %s"
+           (affiche_pat let_binding)
+           (affiche_val v1))
     in
-    (match e1, recursive with
-     | e1, false -> eval_ctx ctx e1 next cont_exception
-     | Cst (Fun (f_binding, f_ex)), true ->
-       let capture_list =
-         StringSet.diff
-           (open_vars_val (Fun (f_binding, f_ex)))
-           (open_vars_pattern let_binding)
-       in
-       let cc_ex_restore = restore (StringSet.to_list capture_list) ctx f_ex in
-       let cc =
-         Fun
-           ( f_binding
-           , Let (let_binding, Cst (Fun (f_binding, cc_ex_restore)), cc_ex_restore, true)
-           )
-       in
-       dbg "defined the recursive closure %s" (affiche_val cc);
-       next cc
-     | _, true ->
-       raise
-         (SyntaxError "Illegal usage of let rec. Only use to define function directly"))
+    let next l =
+      add_vars ctx (List.to_seq l);
+      eval_ctx
+        ctx
+        e2
+        (fun v2 ->
+           rem_vars ctx (Seq.map fst (List.to_seq l));
+           cont v2)
+        (fun v2 ->
+           rem_vars ctx (Seq.map fst (List.to_seq l));
+           cont_exception v2)
+    in
+    if recursive then (
+      let capture_list =
+        StringSet.diff (open_vars_expr e1) (open_vars_pattern let_binding)
+      in
+      let cc_ex_restore = restore (StringSet.to_list capture_list) ctx e1 in
+      match expr_matcher cc_ex_restore let_binding with
+           | None -> raise (SyntaxError ("Malformed let rec: "^(affiche_expr e)))
+           | Some l ->
+             next
+               (List.map
+                  (fun (name, v) ->
+                     ( name
+                     , match v with
+                       | Fun (bind, expr, restore) ->
+                         Fun (bind, Let (let_binding, cc_ex_restore, expr, true), restore)
+                       | _ -> v ))
+                  l)
+    ) else
+      eval_ctx
+        ctx
+        e1
+        (fun v1 ->
+           match matcher v1 let_binding with
+           | None -> raise (er v1)
+           | Some l -> next l)
+        cont_exception
   | Control_flow (predicat, branchs, loop) ->
     eval_ctx
       ctx
@@ -299,12 +357,12 @@ let rec eval_ctx
          with
          | None ->
            if loop then (
-             dbg "end of loop";
+             dbg (lazy (pp "end of loop"));
              cont Unit
            ) else
              raise (SyntaxError "A value was not matched by any branch of a control flow")
          | Some (binding_list, branch) ->
-           dbg "Successful matching in control flow";
+           dbg (lazy (pp "Successful matching in control flow"));
            add_vars ctx (List.to_seq binding_list);
            eval_ctx
              ctx
@@ -316,7 +374,9 @@ let rec eval_ctx
                 (*As e is the whole control flow, we loop back to evaluating pred*)
                 else
                   cont v)
-             cont_exception)
+             (fun v ->
+                rem_vars ctx (Seq.map fst (List.to_seq binding_list));
+                cont_exception v))
       cont_exception
   | Constructor (name, expr_list) ->
     (*Here, the case where expr_list is empty and a single argument is provided via call is already handled by the parent Call ast Node*)
@@ -327,27 +387,31 @@ let rec eval_ctx
       let conti =
         ref (fun l ->
           dbg
-            "Constructing a %s with arguments %s"
-            name
-            (List.fold_left (fun acc v -> acc ^ ", " ^ affiche_val v) "" l);
+            (lazy
+              (pp
+                 "Constructing a %s with arguments %s"
+                 name
+                 (List.fold_left (fun acc v -> acc ^ ", " ^ affiche_val v) "" l)));
           cont (Construct (name, List.rev l)))
       in
       List.iter
         (fun e ->
-           dbg "building up the passing closure with expression e = %s" (affiche_expr e);
-           let next = ! conti in
-           conti := (fun l ->
-           eval_ctx ctx e (fun v ->
-            next (v :: l)) cont_exception))
+           dbg
+             (lazy
+               (pp
+                  "building up the passing closure with expression e = %s"
+                  (affiche_expr e)));
+           let next = !conti in
+           conti := fun l -> eval_ctx ctx e (fun v -> next (v :: l)) cont_exception)
         (List.rev expr_list);
       !conti []
     ) else
       raise
         (SyntaxError ("The constructor " ^ name ^ " has the wrong number of argument"))
   | Try (e, branchs) ->
-    dbg "entering a try";
+    dbg (lazy (pp "entering a try"));
     eval_ctx ctx e cont (fun v ->
-      dbg "attempting to catch the error %s" (affiche_val v);
+      dbg (lazy (pp "attempting to catch the error %s" (affiche_val v)));
       match
         List.find_map
           (fun c -> Option.map (fun l -> l, snd c) (matcher v (fst c)))
@@ -355,7 +419,7 @@ let rec eval_ctx
       with
       | None -> cont_exception v
       | Some (bind, branch) ->
-        dbg "catched succesfully";
+        dbg (lazy (pp "catched succesfully"));
         add_vars ctx (List.to_seq bind);
         eval_ctx
           ctx
@@ -363,6 +427,10 @@ let rec eval_ctx
           (fun v ->
              rem_vars ctx (Seq.map fst (List.to_seq bind));
              cont v)
-          cont_exception)
-  | Raise e -> dbg "Raising an error."; eval_ctx ctx e cont_exception cont_exception
+          (fun v ->
+             rem_vars ctx (Seq.map fst (List.to_seq bind));
+             cont_exception v))
+  | Raise e ->
+    dbg (lazy (pp "Raising an error."));
+    eval_ctx ctx e cont_exception cont_exception
 ;;

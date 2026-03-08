@@ -1,5 +1,14 @@
+(*
+    An unfinished and untested attempt at CPS source traduction
+*)
+
 open Types
 
+
+(******************************************************************
+*********** Utility fonction for easy AST generation **************
+*******************************************************************)
+(*parse a format and its arguments into an expr*)
 let ex fmt =
   Printf.ksprintf
     (fun s ->
@@ -8,10 +17,12 @@ let ex fmt =
     fmt
 ;;
 
+(*get and remove head*)
 let (!!) rl = match !rl with
   | [] -> failwith "no more values"
   | e::l -> rl:=l;e;;
 
+(*parse a expression, to replace all ocurrence of __ with expressions in rep, in order*)
 let rec replace_e (e : expr) (rep : expr list ref) : expr =
   match e with
   | Var "__" -> !!rep
@@ -37,14 +48,17 @@ let rec replace_e (e : expr) (rep : expr list ref) : expr =
     Try (e
       , List.map (fun (pat, e) -> replace_pat pat rep, replace_e e rep) branchs )
 
+(*The same in values*)
 and replace_v v rep =
   match v with
   | Construct (c, lst) -> Construct (c, List.map (fun x -> replace_v x rep) lst)
-  | Fun (binding, e) ->
+  | Fun (binding, e, None) ->
     let binding = replace_pat binding rep in
-    Fun (binding, replace_e e rep)
+    Fun (binding, replace_e e rep, None)
+  | Fun (_,_,Some _) -> raise (InternalError "Source code should have no capture")
   | VI _ | Unit | Intrinsic _ -> v
 
+(*And in patterns (limited functionality)*)
 and replace_pat p rep =
   match p with
   | Binding "__" ->
@@ -57,6 +71,7 @@ and replace_pat p rep =
   | Either (p1, p2) -> Either (replace_pat p1 rep, replace_pat p2 rep)
 ;;
 
+(*Combine the above to get the final expr from string, format, and expression list*)
 let placeholder fmt =
   Printf.ksprintf
     (fun s v ->
@@ -65,9 +80,14 @@ let placeholder fmt =
        replace_e e (ref v))
     fmt
 ;;
-(*Fonction identité*)
-let id = Cst(Fun(Binding("v"),Var("v")));;
+(*Fonction identité (Ast fouine)*)
+let id = Cst(Fun(Binding("v"),Var("v"),None));;
 
+(**********************************************
+******* La fonction de traduction *************
+***********************************************)
+
+(*pour les expressions*)
 let rec cps (e : expr) : expr =
   match e with
   | Var id -> placeholder "fun k k_E -> k __" [Var(id)]
@@ -75,7 +95,7 @@ let rec cps (e : expr) : expr =
   | Let(binding,e1,e2,false) ->
     let e1,e2 = cps e1,cps e2 in
     placeholder "fun k k_E -> __ (fun %s -> __ k k_E) k_E" (Affichage.affiche_pat binding) [e1;e2] (*Oui je transforme un pattern en string pour le reparser. Mais je suis une feignasse*)
-  | Let(_,_,_,true) -> placeholder "fun k k_E -> "
+  | Let(_,_,_,true) -> failwith "todo"
   | Call(e1,e2) ->
     let e1,e2 = cps e1,cps e2 in
     placeholder "fun k k_E -> __ (fun v2 -> __ (fun v1 -> v1 v2 k k_E) k_E) k_E" [e2;e1]
@@ -95,10 +115,11 @@ let rec cps (e : expr) : expr =
   | Control_flow(_,_,true) -> failwith "no loop yet"
   
     
-
+(*pour les valeurs*)
 and cps_v v =
   match v with
   | Construct (c, lst) -> Construct (c, List.map cps_v lst)
-  | Fun (binding, e) -> Fun (binding, cps e)
+  | Fun (binding, e,None) -> Fun (binding, cps e,None)
+  | Fun (_,_,Some _) -> raise (InternalError "Source code should have no capture")
   | VI _ | Unit | Intrinsic _ -> v
 ;;

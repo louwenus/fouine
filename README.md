@@ -1,23 +1,35 @@
-# État actuel de ma fouine:
-Types entier, bool, fonction et unit
+# Fonctionnalitées actuelles de ma fouine:
+Types entier, bool, fonction, unit, liste et couples fonctionnels (y compris les couples sans parenthèse)
+
+Declarations, séquences, let top-level.
+
+Fonction récurisves, y compris mutuellement récursives (syntaxe let rec ... and ... ou avec des tupple/liste (let rec [f;g;h] = [...])).
+
+try et raise (gérée par eval en cps)
 
 Une belle libraire standard (voir lib/std.ml). Elle définit:
   - Quelques fonction de la std ocaml, rendues disponible en fouine
   - Les opérateurs classiques (+,-,*,<,...)
   - quelques fonction suplémentaires telles que demandé (prInt)
 
-Declaration et fonction récursives
 La possibilité, comme en Ocaml, de définir/redéfinir nos opérateurs (let ( + ) a b = a + a + b in 10 + 10)
+avec les noms de la std ou d'autres tant qu'ils utilisent les symboles d'opérateurs.
+Comme en caml, priorité, associativité, infixe/prefixe déterminé par le 1er (ou les 2 premiers) char.
 
-; pour séparer des staments executé un a un
-Retours a la lignes qui se comportent comme des espaces
-
-Commentaires
+Commentaires (récursifs) délimités par (*  *)
 
 # Caveats
-- dune test peut planter sur le test si j'y ait laissé un read_int (dune ne permet pas d'entrée sur stdint)
+- Un test qui était dans ManualOutput ne passe pas (et a donc été passé dans ShouldFail):
+  definition d'une closure avec des variables libres non définies ->
+  attendu: rien tant qu'on utilise pas la closure.
+  mon comportement: crash au moment de définir la closure.
+
+- Let rec (avec and eventuels) ne peut définir que des fonction, avec le premier argument visible. Tenter de définir autre chose risque de provoquer des erreurs.
 
 - différence de comportement ocaml/fouine:
   + mes opérateurs && et || ne sont pas lazy
-     (il se trouve que c'est relativement pénible a supporter quand && peut aussi être redéfini ou vu comme une fonction usuelle)
-  + Mes commentaires sont plus permissifs dans leur contenu que ocaml
+     utilisation de preludeCaml.ml pour retirer le comportement lazy d'ocaml.
+     (il se trouve que c'est relativement pénible a supporter quand && peut aussi être redéfini ou vu comme une fonction usuelle, perdant sa lazyness dans ces cas)
+  + Mes commentaires sont plus permissifs dans leur contenu que ocaml (car je ne gère pas les strings)
+  + Ordre d'évaluation: l'ordre d'évaluation des éléments d'un tupple n'est pas celui de ocaml actuel (la doc Ocaml spécifie bien non-determiné: https://ocaml.org/manual/5.4/expr.html#ss:expr-ops-on-data).
+    Normalement le reste est bien conforme (arguments d'une fonction notament)
