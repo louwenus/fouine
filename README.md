@@ -18,6 +18,13 @@ Comme en caml, priorité, associativité, infixe/prefixe déterminé par le 1er 
 
 Commentaires (récursifs) délimités par (*  *)
 
+Début de traduction CPS de la source (non finis, non testé, non lié au options. Voir traduction.ml)
+
+Tests:
+- ajout sur chaque test d'un comparaison fouine / ocaml executé sur le retour de fouine -showsrc (modification de autotest.sh)
+- ajouts de quelques test méchants
+- 1 test (closure avec variables non définies) passé en ShouldFail
+
 # Caveats
 - Un test qui était dans ManualOutput ne passe pas (et a donc été passé dans ShouldFail):
   definition d'une closure avec des variables libres non définies ->
@@ -28,8 +35,8 @@ Commentaires (récursifs) délimités par (*  *)
 
 - différence de comportement ocaml/fouine:
   + mes opérateurs && et || ne sont pas lazy
-     utilisation de preludeCaml.ml pour retirer le comportement lazy d'ocaml.
-     (il se trouve que c'est relativement pénible a supporter quand && peut aussi être redéfini ou vu comme une fonction usuelle, perdant sa lazyness dans ces cas)
+     utilisation de preludeCaml.ml pour retirer le comportement lazy d'ocaml sur les tests.
   + Mes commentaires sont plus permissifs dans leur contenu que ocaml (car je ne gère pas les strings)
-  + Ordre d'évaluation: l'ordre d'évaluation des éléments d'un tupple n'est pas celui de ocaml actuel (la doc Ocaml spécifie bien non-determiné: https://ocaml.org/manual/5.4/expr.html#ss:expr-ops-on-data).
-    Normalement le reste est bien conforme (arguments d'une fonction notament)
+  + Ordre d'évaluation: l'ordre d'évaluation des éléments d'un tupple (et peut être des listes aussi) n'est pas celui de ocaml actuel
+    la doc Ocaml spécifie bien que c'est cencé être non-determiné: https://ocaml.org/manual/5.4/expr.html#ss:expr-ops-on-data
+    Normalement le reste est bien conforme (arguments d'une fonction évalués avant celle ci notament.)

@@ -138,6 +138,7 @@ let std_in_lang =
       \                    body !cnt;\n\
       \                    cnt := !cnt + incr\n\
       \                  done" )
+  ; ("ignore","fun x -> ()")
   ]
 ;;
 
